@@ -33,6 +33,21 @@ import android.content.Context
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.HorizontalDivider
+
+data class BleDeviceUi(
+    val name: String,
+    val address: String,
+    val rssi: Int
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,11 +59,14 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BLE_Attendance_SysTheme {
+
+                val visibleDevices = scannedDevices.values
+                    .filter { device -> device.name != "Unknown" }
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(24.dp),
-                    verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
 
@@ -56,24 +74,64 @@ class MainActivity : ComponentActivity() {
                         text = "BLE Attendance System"
                     )
 
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = if (isScanning) {
+                            "상태: 스캔 중"
+                        } else {
+                            "상태: 스캔 중지"
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row {
+
+                        Button(
+                            onClick = {
+                                startBleScan()
+                            }
+                        ) {
+                            Text("스캔 시작")
+                        }
+
+                        Spacer(modifier = Modifier.padding(6.dp))
+
+                        Button(
+                            onClick = {
+                                stopBleScan()
+                            }
+                        ) {
+                            Text("스캔 중지")
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    Button(
-                        onClick = {
-                            startBleScan()
-                        }
-                    ) {
-                        Text("스캔 시작")
-                    }
+                    Text(
+                        text = "발견된 장치: ${visibleDevices.size}개"
+                    )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Button(
-                        onClick = {
-                            stopBleScan()
-                        }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("스캔 중지")
+
+                        items(
+                            items = visibleDevices,
+                            key = { device -> device.address }
+                        ) { device ->
+
+                            Text(text = device.name)
+                            Text(text = device.address)
+                            Text(text = "RSSI: ${device.rssi} dBm")
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            HorizontalDivider()
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
                     }
                 }
             }
@@ -82,7 +140,8 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private var bluetoothLeScanner: BluetoothLeScanner? = null
-    private var isScanning = false
+    private var isScanning by mutableStateOf(false)
+    private val scannedDevices = mutableStateMapOf<String, BleDeviceUi>()
 
     private val requestBluetoothPermissions =
         registerForActivityResult(
@@ -147,6 +206,12 @@ class MainActivity : ComponentActivity() {
             val deviceAddress = result.device.address
             val rssi = result.rssi
 
+            scannedDevices[deviceAddress] = BleDeviceUi(
+                name = deviceName,
+                address = deviceAddress,
+                rssi = rssi
+            )
+
             Log.d(
                 "BLE_SCAN",
                 "Device: $deviceName, Address: $deviceAddress, RSSI: $rssi"
@@ -193,6 +258,9 @@ class MainActivity : ComponentActivity() {
         }
 
         if (!isScanning) {
+
+            scannedDevices.clear()
+
             bluetoothLeScanner?.startScan(scanCallback)
             isScanning = true
 
