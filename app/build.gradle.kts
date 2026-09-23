@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.ble_attendance_sys"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
