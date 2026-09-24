@@ -46,6 +46,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.runtime.mutableStateListOf
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanSettings
+import android.content.ContentValues
+import android.os.Environment
+import android.provider.MediaStore
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class BleDeviceUi(
     val name: String,
@@ -167,6 +173,17 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Text("수집 중지")
                             }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Button(
+                            onClick = {
+                                saveRssiSamplesToCsv()
+                            },
+                            enabled = !isCollecting && rssiSamples.isNotEmpty()
+                        ) {
+                            Text("CSV 저장")
                         }
 
                         Spacer(modifier = Modifier.height(24.dp))
@@ -432,6 +449,89 @@ class MainActivity : ComponentActivity() {
         isScanning = true
 
         Log.d("BLE_SCAN", "Target scan started: $address")
+    }
+
+    private fun saveRssiSamplesToCsv() {
+
+        if (rssiSamples.isEmpty()) {
+            Log.d("RSSI_DATA", "No RSSI samples to save")
+            return
+        }
+
+        val fileName = "rssi_${
+            SimpleDateFormat(
+                "yyyyMMdd_HHmmss",
+                Locale.getDefault()
+            ).format(Date())
+        }.csv"
+
+        val contentValues = ContentValues().apply {
+            put(
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                fileName
+            )
+            put(
+                MediaStore.MediaColumns.MIME_TYPE,
+                "text/csv"
+            )
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                Environment.DIRECTORY_DOWNLOADS + "/BLEAttendanceSystem"
+            )
+        }
+
+        val uri = contentResolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            contentValues
+        )
+
+        if (uri == null) {
+            Log.e("RSSI_DATA", "Failed to create CSV file")
+            return
+        }
+
+        contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+
+            writer.write(
+                "timestamp_ms,datetime,rssi,interval_ms,device_name,device_address\n"
+            )
+
+            var previousTimestamp: Long? = null
+
+            for (sample in rssiSamples) {
+
+                val dateTime = SimpleDateFormat(
+                    "yyyy-MM-dd HH:mm:ss.SSS",
+                    Locale.getDefault()
+                ).format(Date(sample.timestamp))
+
+                val interval =
+                    if (previousTimestamp == null) {
+                        0
+                    } else {
+                        sample.timestamp - previousTimestamp!!
+                    }
+
+                val address = selectedDeviceAddress ?: ""
+                val name = scannedDevices[address]?.name ?: "Unknown"
+
+                writer.write(
+                    "${sample.timestamp}," +
+                            "$dateTime," +
+                            "${sample.rssi}," +
+                            "$interval," +
+                            "$name," +
+                            "$address\n"
+                )
+
+                previousTimestamp = sample.timestamp
+            }
+        }
+
+        Log.d(
+            "RSSI_DATA",
+            "CSV saved: $fileName, samples: ${rssiSamples.size}"
+        )
     }
 }
 
