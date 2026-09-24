@@ -42,10 +42,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.mutableStateListOf
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanSettings
 
 data class BleDeviceUi(
     val name: String,
     val address: String,
+    val rssi: Int
+)
+
+data class RssiSample(
+    val timestamp: Long,
     val rssi: Int
 )
 
@@ -62,6 +71,9 @@ class MainActivity : ComponentActivity() {
 
                 val visibleDevices = scannedDevices.values
                     .filter { device -> device.name != "Unknown" }
+                val selectedDevice = selectedDeviceAddress?.let { address ->
+                    scannedDevices[address]
+                }
 
                 Column(
                     modifier = Modifier
@@ -109,6 +121,57 @@ class MainActivity : ComponentActivity() {
 
                     Spacer(modifier = Modifier.height(24.dp))
 
+                    if (selectedDevice != null) {
+
+                        Text(
+                            text = "선택된 장치: ${selectedDevice.name}"
+                        )
+
+                        Text(
+                            text = "현재 RSSI: ${selectedDevice.rssi} dBm"
+                        )
+
+                        Text(
+                            text = selectedDevice.address
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = if (isCollecting) {
+                                "데이터 수집 중 (${rssiSamples.size}개)"
+                            } else {
+                                "데이터 수집 중지 (${rssiSamples.size}개)"
+                            }
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row {
+                            Button(
+                                onClick = {
+                                    startRssiCollection()
+                                },
+                                enabled = !isCollecting
+                            ) {
+                                Text("수집 시작")
+                            }
+
+                            Spacer(modifier = Modifier.padding(6.dp))
+
+                            Button(
+                                onClick = {
+                                    stopRssiCollection()
+                                },
+                                enabled = isCollecting
+                            ) {
+                                Text("수집 중지")
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+
                     Text(
                         text = "발견된 장치: ${visibleDevices.size}개"
                     )
@@ -124,13 +187,20 @@ class MainActivity : ComponentActivity() {
                             key = { device -> device.address }
                         ) { device ->
 
-                            Text(text = device.name)
-                            Text(text = device.address)
-                            Text(text = "RSSI: ${device.rssi} dBm")
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedDeviceAddress = device.address
+                                    }
+                                    .padding(vertical = 8.dp)
+                            ) {
+                                Text(text = device.name)
+                                Text(text = device.address)
+                                Text(text = "RSSI: ${device.rssi} dBm")
+                            }
 
-                            Spacer(modifier = Modifier.height(8.dp))
                             HorizontalDivider()
-                            Spacer(modifier = Modifier.height(8.dp))
                         }
                     }
                 }
@@ -142,6 +212,9 @@ class MainActivity : ComponentActivity() {
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     private var isScanning by mutableStateOf(false)
     private val scannedDevices = mutableStateMapOf<String, BleDeviceUi>()
+    private var selectedDeviceAddress by mutableStateOf<String?>(null)
+    private var isCollecting by mutableStateOf(false)
+    private val rssiSamples = mutableStateListOf<RssiSample>()
 
     private val requestBluetoothPermissions =
         registerForActivityResult(
@@ -204,6 +277,12 @@ class MainActivity : ComponentActivity() {
 
             val deviceName = result.device.name ?: "Unknown"
             val deviceAddress = result.device.address
+            if (
+                isCollecting &&
+                deviceAddress != selectedDeviceAddress
+            ) {
+                return
+            }
             val rssi = result.rssi
 
             scannedDevices[deviceAddress] = BleDeviceUi(
@@ -211,6 +290,14 @@ class MainActivity : ComponentActivity() {
                 address = deviceAddress,
                 rssi = rssi
             )
+            if (isCollecting) {
+                rssiSamples.add(
+                    RssiSample(
+                        timestamp = System.currentTimeMillis(),
+                        rssi = rssi
+                    )
+                )
+            }
 
             Log.d(
                 "BLE_SCAN",
@@ -260,6 +347,7 @@ class MainActivity : ComponentActivity() {
         if (!isScanning) {
 
             scannedDevices.clear()
+            selectedDeviceAddress = null
 
             bluetoothLeScanner?.startScan(scanCallback)
             isScanning = true
@@ -282,6 +370,68 @@ class MainActivity : ComponentActivity() {
 
             Log.d("BLE_SCAN", "BLE scan stopped")
         }
+    }
+
+    private fun startRssiCollection() {
+
+        val address = selectedDeviceAddress ?: return
+
+        if (
+            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        // 기존 전체 장치 스캔 중지
+        bluetoothLeScanner?.stopScan(scanCallback)
+
+        rssiSamples.clear()
+        isCollecting = true
+
+        // 선택된 장치만 고속 스캔
+        startTargetScan(address)
+
+        Log.d("RSSI_DATA", "RSSI collection started")
+    }
+    private fun stopRssiCollection() {
+
+        isCollecting = false
+
+        Log.d(
+            "RSSI_DATA",
+            "RSSI collection stopped. Samples: ${rssiSamples.size}"
+        )
+    }
+
+    private fun startTargetScan(address: String) {
+
+        if (
+            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val filter = ScanFilter.Builder()
+            .setDeviceAddress(address)
+            .build()
+
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setReportDelay(0)
+            .build()
+
+        bluetoothLeScanner?.startScan(
+            listOf(filter),
+            settings,
+            scanCallback
+        )
+
+        isScanning = true
+
+        Log.d("BLE_SCAN", "Target scan started: $address")
     }
 }
 
