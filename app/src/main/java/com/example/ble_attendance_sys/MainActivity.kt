@@ -68,6 +68,8 @@ data class RssiSample(
 )
 
 class MainActivity : ComponentActivity() {
+    private val serverBaseUrl = "http://192.168.219.105:8000"
+    private var serverClient: BleServerClient? = null
     private val windowHandler = Handler(Looper.getMainLooper())
     private var windowAggregator: BleWindowAggregator? = null
     private val closedWindows = mutableStateListOf<BleWindow>()
@@ -90,6 +92,7 @@ class MainActivity : ComponentActivity() {
         closedWindows.addAll(windows)
 
         windows.forEach { window ->
+            serverClient?.enqueue(window)
             Log.d(
                 "BLE_WINDOW",
                 "index=${window.windowIndex} state=${window.scanState} " +
@@ -468,8 +471,23 @@ class MainActivity : ComponentActivity() {
         closedWindows.clear()
         windowHandler.removeCallbacks(windowTicker)
 
-        windowAggregator = BleWindowAggregator(
-            SystemClock.elapsedRealtimeNanos()
+        val startElapsedNs = SystemClock.elapsedRealtimeNanos()
+        val startEpochMs = System.currentTimeMillis()
+
+        windowAggregator = BleWindowAggregator(startElapsedNs)
+
+        if (serverClient == null) {
+            serverClient = BleServerClient(
+                applicationContext,
+                serverBaseUrl
+            )
+        }
+
+        serverClient?.beginSession(
+            classId = "class-demo-01",
+            beaconId = "room-demo-01",
+            startEpochMs = startEpochMs,
+            startElapsedNs = startElapsedNs
         )
         isCollecting = true
 
@@ -608,6 +626,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         windowHandler.removeCallbacks(windowTicker)
+        serverClient?.close()
 
         if (
             checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
