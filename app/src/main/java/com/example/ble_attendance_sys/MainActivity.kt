@@ -52,6 +52,9 @@ import android.provider.MediaStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 
 data class BleDeviceUi(
     val name: String,
@@ -65,6 +68,36 @@ data class RssiSample(
 )
 
 class MainActivity : ComponentActivity() {
+    private val windowHandler = Handler(Looper.getMainLooper())
+    private var windowAggregator: BleWindowAggregator? = null
+    private val closedWindows = mutableStateListOf<BleWindow>()
+
+    private val windowTicker = object : Runnable {
+        override fun run() {
+            if (!isCollecting) return
+
+            recordWindows(
+                windowAggregator
+                    ?.advanceTo(SystemClock.elapsedRealtimeNanos())
+                    .orEmpty()
+            )
+
+            windowHandler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun recordWindows(windows: List<BleWindow>) {
+        closedWindows.addAll(windows)
+
+        windows.forEach { window ->
+            Log.d(
+                "BLE_WINDOW",
+                "index=${window.windowIndex} state=${window.scanState} " +
+                        "count=${window.sampleCount} mean=${window.meanRssiDbm} " +
+                        "std=${window.stdRssiDbm} lastNs=${window.lastPacketElapsedNs}"
+            )
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -109,7 +142,8 @@ class MainActivity : ComponentActivity() {
                         Button(
                             onClick = {
                                 startBleScan()
-                            }
+                            },
+                            enabled = !isCollecting // 수집 중 버튼 비활성화
                         ) {
                             Text("스캔 시작")
                         }
@@ -146,10 +180,20 @@ class MainActivity : ComponentActivity() {
                         Text(
                             text = if (isCollecting) {
                                 "데이터 수집 중 (${rssiSamples.size}개)"
+
                             } else {
                                 "데이터 수집 중지 (${rssiSamples.size}개)"
                             }
                         )
+                        Text("완료된 5초 Window: ${closedWindows.size}개")
+
+                        closedWindows.lastOrNull()?.let { last ->
+                            Text(
+                                "최근 Window ${last.windowIndex}: ${last.scanState}, " +
+                                        "패킷 ${last.sampleCount}개, " +
+                                        "평균 RSSI ${last.meanRssiDbm ?: "없음"}"
+                            )
+                        }
 
                         Spacer(modifier = Modifier.height(8.dp))
 
@@ -308,6 +352,12 @@ class MainActivity : ComponentActivity() {
                 rssi = rssi
             )
             if (isCollecting) {
+                recordWindows(
+                    windowAggregator
+                        ?.addPacket(result.timestampNanos, rssi)
+                        .orEmpty()
+                )
+
                 rssiSamples.add(
                     RssiSample(
                         timestamp = System.currentTimeMillis(),
@@ -324,6 +374,15 @@ class MainActivity : ComponentActivity() {
 
         override fun onScanFailed(errorCode: Int) {
             super.onScanFailed(errorCode)
+            isScanning = false
+
+            if (isCollecting) {
+                recordWindows(
+                    windowAggregator
+                        ?.setScanRunning(false, SystemClock.elapsedRealtimeNanos())
+                        .orEmpty()
+                )
+            }
 
             Log.e(
                 "BLE_SCAN",
@@ -333,6 +392,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startBleScan() {
+        if (isCollecting) return
 
         if (
             checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -373,6 +433,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun stopBleScan() {
+        if (isCollecting) stopRssiCollection()
 
         if (
             checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -404,15 +465,26 @@ class MainActivity : ComponentActivity() {
         bluetoothLeScanner?.stopScan(scanCallback)
 
         rssiSamples.clear()
+        closedWindows.clear()
+        windowHandler.removeCallbacks(windowTicker)
+
+        windowAggregator = BleWindowAggregator(
+            SystemClock.elapsedRealtimeNanos()
+        )
         isCollecting = true
 
-        // 선택된 장치만 고속 스캔
         startTargetScan(address)
+        windowHandler.post(windowTicker)
 
         Log.d("RSSI_DATA", "RSSI collection started")
     }
     private fun stopRssiCollection() {
-
+        recordWindows(
+            windowAggregator
+                ?.advanceTo(SystemClock.elapsedRealtimeNanos())
+                .orEmpty()
+        )
+        windowHandler.removeCallbacks(windowTicker)
         isCollecting = false
 
         Log.d(
@@ -532,6 +604,19 @@ class MainActivity : ComponentActivity() {
             "RSSI_DATA",
             "CSV saved: $fileName, samples: ${rssiSamples.size}"
         )
+    }
+
+    override fun onDestroy() {
+        windowHandler.removeCallbacks(windowTicker)
+
+        if (
+            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        }
+
+        super.onDestroy()
     }
 }
 
