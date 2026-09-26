@@ -30,6 +30,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.content.Context
+import android.content.Intent
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.util.Log
@@ -43,18 +44,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.clickable
-import androidx.compose.runtime.mutableStateListOf
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanSettings
 import android.content.ContentValues
 import android.os.Environment
 import android.provider.MediaStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import android.os.Handler
-import android.os.Looper
-import android.os.SystemClock
 
 data class BleDeviceUi(
     val name: String,
@@ -68,39 +63,10 @@ data class RssiSample(
 )
 
 class MainActivity : ComponentActivity() {
-    private val serverBaseUrl = "http://192.168.219.105:8000"
-    private var serverClient: BleServerClient? = null
-    private val windowHandler = Handler(Looper.getMainLooper())
-    private var windowAggregator: BleWindowAggregator? = null
-    private val closedWindows = mutableStateListOf<BleWindow>()
+    // Replace with the PC IPv4 address that worked in your phone browser.
+    private val serverBaseUrl = "http://192.168.35.96:8000"
+    private val closedWindows get() = CollectionUiState.closedWindows
 
-    private val windowTicker = object : Runnable {
-        override fun run() {
-            if (!isCollecting) return
-
-            recordWindows(
-                windowAggregator
-                    ?.advanceTo(SystemClock.elapsedRealtimeNanos())
-                    .orEmpty()
-            )
-
-            windowHandler.postDelayed(this, 1000L)
-        }
-    }
-
-    private fun recordWindows(windows: List<BleWindow>) {
-        closedWindows.addAll(windows)
-
-        windows.forEach { window ->
-            serverClient?.enqueue(window)
-            Log.d(
-                "BLE_WINDOW",
-                "index=${window.windowIndex} state=${window.scanState} " +
-                        "count=${window.sampleCount} mean=${window.meanRssiDbm} " +
-                        "std=${window.stdRssiDbm} lastNs=${window.lastPacketElapsedNs}"
-            )
-        }
-    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -131,7 +97,11 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text = if (isScanning) {
+                        text = if (isCollecting && CollectionUiState.scanInterrupted) {
+                            "상태: BLE 스캔 중단"
+                        } else if (isCollecting) {
+                            "상태: 수집 중 (백그라운드 가능)"
+                        } else if (isScanning) {
                             "상태: 스캔 중"
                         } else {
                             "상태: 스캔 중지"
@@ -146,7 +116,7 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 startBleScan()
                             },
-                            enabled = !isCollecting // 수집 중 버튼 비활성화
+                            enabled = !isCollecting
                         ) {
                             Text("스캔 시작")
                         }
@@ -164,18 +134,18 @@ class MainActivity : ComponentActivity() {
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    if (selectedDevice != null) {
+                    if (selectedDevice != null || isCollecting || rssiSamples.isNotEmpty()) {
 
                         Text(
-                            text = "선택된 장치: ${selectedDevice.name}"
+                            text = "선택된 장치: ${selectedDevice?.name ?: "수집 중"}"
                         )
 
-                        Text(
-                            text = "현재 RSSI: ${selectedDevice.rssi} dBm"
-                        )
+                        val shownRssi = if (isCollecting) rssiSamples.lastOrNull()?.rssi
+                        else selectedDevice?.rssi
+                        Text("현재 RSSI: ${shownRssi?.let { "$it dBm" } ?: "수신 대기"}")
 
                         Text(
-                            text = selectedDevice.address
+                            text = selectedDevice?.address ?: CollectionUiState.deviceAddress.orEmpty()
                         )
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -183,19 +153,15 @@ class MainActivity : ComponentActivity() {
                         Text(
                             text = if (isCollecting) {
                                 "데이터 수집 중 (${rssiSamples.size}개)"
-
                             } else {
                                 "데이터 수집 중지 (${rssiSamples.size}개)"
                             }
                         )
-                        Text("완료된 5초 Window: ${closedWindows.size}개")
 
+                        Text("완료된 5초 Window: ${closedWindows.size}개")
                         closedWindows.lastOrNull()?.let { last ->
-                            Text(
-                                "최근 Window ${last.windowIndex}: ${last.scanState}, " +
-                                        "패킷 ${last.sampleCount}개, " +
-                                        "평균 RSSI ${last.meanRssiDbm ?: "없음"}"
-                            )
+                            Text("최근 Window ${last.windowIndex}: ${last.scanState}, " +
+                                    "패킷 ${last.sampleCount}개, 평균 RSSI ${last.meanRssiDbm ?: "없음"}")
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
@@ -277,8 +243,14 @@ class MainActivity : ComponentActivity() {
     private var isScanning by mutableStateOf(false)
     private val scannedDevices = mutableStateMapOf<String, BleDeviceUi>()
     private var selectedDeviceAddress by mutableStateOf<String?>(null)
-    private var isCollecting by mutableStateOf(false)
-    private val rssiSamples = mutableStateListOf<RssiSample>()
+    private val isCollecting get() = CollectionUiState.isCollecting
+    private val rssiSamples get() = CollectionUiState.rssiSamples
+
+    private val requestNotificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        Log.d("BLE_SCAN", "Notification permission granted: $granted")
+    }
 
     private val requestBluetoothPermissions =
         registerForActivityResult(
@@ -341,12 +313,7 @@ class MainActivity : ComponentActivity() {
 
             val deviceName = result.device.name ?: "Unknown"
             val deviceAddress = result.device.address
-            if (
-                isCollecting &&
-                deviceAddress != selectedDeviceAddress
-            ) {
-                return
-            }
+            if (isCollecting) return
             val rssi = result.rssi
 
             scannedDevices[deviceAddress] = BleDeviceUi(
@@ -354,20 +321,6 @@ class MainActivity : ComponentActivity() {
                 address = deviceAddress,
                 rssi = rssi
             )
-            if (isCollecting) {
-                recordWindows(
-                    windowAggregator
-                        ?.addPacket(result.timestampNanos, rssi)
-                        .orEmpty()
-                )
-
-                rssiSamples.add(
-                    RssiSample(
-                        timestamp = System.currentTimeMillis(),
-                        rssi = rssi
-                    )
-                )
-            }
 
             Log.d(
                 "BLE_SCAN",
@@ -377,15 +330,8 @@ class MainActivity : ComponentActivity() {
 
         override fun onScanFailed(errorCode: Int) {
             super.onScanFailed(errorCode)
-            isScanning = false
 
-            if (isCollecting) {
-                recordWindows(
-                    windowAggregator
-                        ?.setScanRunning(false, SystemClock.elapsedRealtimeNanos())
-                        .orEmpty()
-                )
-            }
+            isScanning = false
 
             Log.e(
                 "BLE_SCAN",
@@ -395,6 +341,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startBleScan() {
+
         if (isCollecting) return
 
         if (
@@ -436,6 +383,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun stopBleScan() {
+
         if (isCollecting) stopRssiCollection()
 
         if (
@@ -459,86 +407,44 @@ class MainActivity : ComponentActivity() {
 
         if (
             checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+            != PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
             != PackageManager.PERMISSION_GRANTED
         ) {
+            checkBluetoothPermissions()
             return
         }
 
-        // 기존 전체 장치 스캔 중지
         bluetoothLeScanner?.stopScan(scanCallback)
+        isScanning = false
 
         rssiSamples.clear()
         closedWindows.clear()
-        windowHandler.removeCallbacks(windowTicker)
-
-        val startElapsedNs = SystemClock.elapsedRealtimeNanos()
-        val startEpochMs = System.currentTimeMillis()
-
-        windowAggregator = BleWindowAggregator(startElapsedNs)
-
-        if (serverClient == null) {
-            serverClient = BleServerClient(
-                applicationContext,
-                serverBaseUrl
-            )
+        val intent = Intent(this, BleCollectionService::class.java).apply {
+            action = BleCollectionService.ACTION_START
+            putExtra(BleCollectionService.EXTRA_ADDRESS, address)
+            putExtra(BleCollectionService.EXTRA_SERVER_URL, serverBaseUrl)
         }
-
-        serverClient?.beginSession(
-            classId = "class-demo-01",
-            beaconId = "room-demo-01",
-            startEpochMs = startEpochMs,
-            startElapsedNs = startElapsedNs
-        )
-        isCollecting = true
-
-        startTargetScan(address)
-        windowHandler.post(windowTicker)
-
-        Log.d("RSSI_DATA", "RSSI collection started")
-    }
-    private fun stopRssiCollection() {
-        recordWindows(
-            windowAggregator
-                ?.advanceTo(SystemClock.elapsedRealtimeNanos())
-                .orEmpty()
-        )
-        windowHandler.removeCallbacks(windowTicker)
-        isCollecting = false
-
-        Log.d(
-            "RSSI_DATA",
-            "RSSI collection stopped. Samples: ${rssiSamples.size}"
-        )
-    }
-
-    private fun startTargetScan(address: String) {
-
-        if (
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+        startForegroundService(intent)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            return
+            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        Log.d("RSSI_DATA", "BLE collection service requested")
+    }
+    private fun stopRssiCollection() {
+        startService(Intent(this, BleCollectionService::class.java).apply {
+            action = BleCollectionService.ACTION_STOP
+        })
+    }
 
-        val filter = ScanFilter.Builder()
-            .setDeviceAddress(address)
-            .build()
-
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .setReportDelay(0)
-            .build()
-
-        bluetoothLeScanner?.startScan(
-            listOf(filter),
-            settings,
-            scanCallback
-        )
-
-        isScanning = true
-
-        Log.d("BLE_SCAN", "Target scan started: $address")
+    override fun onDestroy() {
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        }
+        super.onDestroy()
     }
 
     private fun saveRssiSamplesToCsv() {
@@ -622,20 +528,6 @@ class MainActivity : ComponentActivity() {
             "RSSI_DATA",
             "CSV saved: $fileName, samples: ${rssiSamples.size}"
         )
-    }
-
-    override fun onDestroy() {
-        windowHandler.removeCallbacks(windowTicker)
-        serverClient?.close()
-
-        if (
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            bluetoothLeScanner?.stopScan(scanCallback)
-        }
-
-        super.onDestroy()
     }
 }
 
