@@ -29,6 +29,9 @@ class BleCollectionService : Service() {
         const val ACTION_STOP = "com.example.ble_attendance_sys.STOP_COLLECTION"
         const val EXTRA_ADDRESS = "device_address"
         const val EXTRA_SERVER_URL = "server_url"
+        const val EXTRA_CLASS_ID = "class_id"
+        const val EXTRA_STUDENT_ID = "student_id"
+        const val EXTRA_STUDENT_NAME = "student_name"
         private const val CHANNEL_ID = "ble_collection"
         private const val NOTIFICATION_ID = 1001
     }
@@ -79,6 +82,11 @@ class BleCollectionService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 stopCollection()
+
+                CollectionUiState.uploadMessage =
+                    "학생이 수집을 중지함 · 수업 중 서버 감시는 유지됩니다"
+
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             ACTION_START -> {
@@ -105,7 +113,31 @@ class BleCollectionService : Service() {
                     notification(),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
                 )
-                startCollection(address, serverUrl)
+                val classId = intent.getStringExtra(EXTRA_CLASS_ID).orEmpty()
+                val studentId = intent.getStringExtra(EXTRA_STUDENT_ID).orEmpty()
+                val studentName = intent.getStringExtra(EXTRA_STUDENT_NAME).orEmpty()
+
+                if (
+                    classId.isBlank() ||
+                    studentId.isBlank() ||
+                    studentName.isBlank()
+                ) {
+                    CollectionUiState.uploadMessage =
+                        "학생 정보와 수업 코드를 입력하세요"
+
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+
+                    return START_NOT_STICKY
+                }
+
+                startCollection(
+                    address,
+                    serverUrl,
+                    classId,
+                    studentId,
+                    studentName
+                )
             }
             else -> stopSelf()
         }
@@ -141,7 +173,13 @@ class BleCollectionService : Service() {
             .build()
     }
 
-    private fun startCollection(address: String, serverUrl: String) {
+    private fun startCollection(
+        address: String,
+        serverUrl: String,
+        classId: String,
+        studentId: String,
+        studentName: String
+    ) {
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
             != PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -170,9 +208,23 @@ class BleCollectionService : Service() {
         val startElapsedNs = SystemClock.elapsedRealtimeNanos()
         val startEpochMs = System.currentTimeMillis()
         aggregator = BleWindowAggregator(startElapsedNs)
-        uploader = BleServerClient(applicationContext, serverUrl).apply {
-            beginSession("class-demo-01", "room-demo-01", startEpochMs, startElapsedNs)
+        uploader = BleServerClient(applicationContext, serverUrl) {
+            stopCollection()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }.apply {
+            beginSession(
+                classId,
+                studentId,
+                studentName,
+                address,
+                startEpochMs,
+                startElapsedNs
+            )
         }
+
+        CollectionUiState.activeClassId = classId
+        CollectionUiState.activeStudentId = studentId
         targetAddress = address
         CollectionUiState.deviceAddress = address
         CollectionUiState.scanInterrupted = false

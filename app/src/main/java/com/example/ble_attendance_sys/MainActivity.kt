@@ -50,6 +50,13 @@ import android.provider.MediaStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import android.widget.Toast
+import java.net.URI
 
 data class BleDeviceUi(
     val name: String,
@@ -64,12 +71,30 @@ data class RssiSample(
 
 class MainActivity : ComponentActivity() {
     // Replace with the PC IPv4 address that worked in your phone browser.
-    private val serverBaseUrl = "http://192.168.35.96:8000"
+    private var serverBaseUrl by mutableStateOf(
+        "http://192.168.35.96:8000"
+    )
+
+    private var classCode by mutableStateOf("")
+    private var studentId by mutableStateOf("")
+    private var studentName by mutableStateOf("")
+    private var showSettings by mutableStateOf(true)
     private val closedWindows get() = CollectionUiState.closedWindows
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val savedSettings = getSharedPreferences(
+            "student_settings",
+            MODE_PRIVATE
+        )
+
+        serverBaseUrl =
+            savedSettings.getString("server", serverBaseUrl) ?: serverBaseUrl
+
+        classCode = savedSettings.getString("class", "").orEmpty()
+        studentId = savedSettings.getString("student", "").orEmpty()
+        studentName = savedSettings.getString("name", "").orEmpty()
 
         checkBluetoothPermissions()
         initializeBluetooth()
@@ -78,7 +103,7 @@ class MainActivity : ComponentActivity() {
             BLE_Attendance_SysTheme {
 
                 val visibleDevices = scannedDevices.values
-                    .filter { device -> device.name != "Unknown" }
+                    .sortedByDescending { device -> device.rssi }
                 val selectedDevice = selectedDeviceAddress?.let { address ->
                     scannedDevices[address]
                 }
@@ -90,8 +115,101 @@ class MainActivity : ComponentActivity() {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
 
+                    Text(text = "SKKU 전자출결")
+
+                    Button(
+                        onClick = { showSettings = true },
+                        enabled = !isCollecting
+                    ) {
+                        Text("학생 정보 · 수업 설정")
+                    }
+
+                    if (showSettings && !isCollecting) {
+                        AlertDialog(
+                            onDismissRequest = {
+                                showSettings = false
+                            },
+                            title = {
+                                Text("수업 참여 설정")
+                            },
+                            text = {
+                                Column(
+                                    modifier = Modifier.verticalScroll(
+                                        rememberScrollState()
+                                    )
+                                ) {
+                                    OutlinedTextField(
+                                        value = serverBaseUrl,
+                                        onValueChange = {
+                                            serverBaseUrl = it
+                                        },
+                                        label = {
+                                            Text("서버 주소")
+                                        },
+                                        singleLine = true
+                                    )
+
+                                    OutlinedTextField(
+                                        value = studentId,
+                                        onValueChange = {
+                                            studentId = it.take(100)
+                                        },
+                                        label = {
+                                            Text("학생 ID")
+                                        },
+                                        singleLine = true
+                                    )
+
+                                    OutlinedTextField(
+                                        value = studentName,
+                                        onValueChange = {
+                                            studentName = it.take(100)
+                                        },
+                                        label = {
+                                            Text("이름")
+                                        },
+                                        singleLine = true
+                                    )
+
+                                    OutlinedTextField(
+                                        value = classCode,
+                                        onValueChange = {
+                                            classCode = it.uppercase().take(8)
+                                        },
+                                        label = {
+                                            Text("8자리 수업 코드")
+                                        },
+                                        singleLine = true
+                                    )
+
+                                    Text("교수자 화면에서 수업을 시작한 뒤 참여하세요.")
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        showSettings = false
+                                    }
+                                ) {
+                                    Text("입력 완료")
+                                }
+                            }
+                        )
+                    }
+
                     Text(
-                        text = "BLE Attendance System"
+                        if (isCollecting) {
+                            "학생 ${CollectionUiState.activeStudentId} · 수업 ${CollectionUiState.activeClassId}"
+                        } else {
+                            "학생 $studentId · 수업 $classCode"
+                        }
+                    )
+
+                    Text(CollectionUiState.uploadMessage)
+
+                    Text(
+                        "전송 대기 ${CollectionUiState.pendingWindows}개 · " +
+                                "거절 보관 ${CollectionUiState.rejectedWindows}개"
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -173,7 +291,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 enabled = !isCollecting
                             ) {
-                                Text("수집 시작")
+                                Text("수업 참여 · 수집 시작")
                             }
 
                             Spacer(modifier = Modifier.padding(6.dp))
@@ -209,7 +327,9 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(12.dp))
 
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
                     ) {
 
                         items(
@@ -220,7 +340,7 @@ class MainActivity : ComponentActivity() {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
+                                    .clickable(enabled = !isCollecting) {
                                         selectedDeviceAddress = device.address
                                     }
                                     .padding(vertical = 8.dp)
@@ -404,6 +524,39 @@ class MainActivity : ComponentActivity() {
     private fun startRssiCollection() {
 
         val address = selectedDeviceAddress ?: return
+        val parsed = runCatching {
+            URI(serverBaseUrl.trim())
+        }.getOrNull()
+
+        if (
+            parsed?.host.isNullOrBlank() ||
+            parsed?.scheme !in listOf("http", "https") ||
+            !classCode.matches(Regex("[A-F0-9]{8}")) ||
+            studentId.isBlank() ||
+            studentName.isBlank()
+        ) {
+            Toast.makeText(
+                this,
+                "서버 주소, 학생 ID·이름, 8자리 수업 코드를 확인하세요",
+                Toast.LENGTH_LONG
+            ).show()
+
+            return
+        }
+
+        serverBaseUrl = serverBaseUrl.trim().trimEnd('/')
+
+        getSharedPreferences(
+            "student_settings",
+            MODE_PRIVATE
+        ).edit()
+            .putString("server", serverBaseUrl)
+            .putString("class", classCode)
+            .putString("student", studentId.trim())
+            .putString("name", studentName.trim())
+            .apply()
+
+        showSettings = false
 
         if (
             checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -424,6 +577,9 @@ class MainActivity : ComponentActivity() {
             action = BleCollectionService.ACTION_START
             putExtra(BleCollectionService.EXTRA_ADDRESS, address)
             putExtra(BleCollectionService.EXTRA_SERVER_URL, serverBaseUrl)
+            putExtra(BleCollectionService.EXTRA_CLASS_ID, classCode)
+            putExtra(BleCollectionService.EXTRA_STUDENT_ID, studentId.trim())
+            putExtra(BleCollectionService.EXTRA_STUDENT_NAME, studentName.trim())
         }
         startForegroundService(intent)
         if (Build.VERSION.SDK_INT >= 33 &&
