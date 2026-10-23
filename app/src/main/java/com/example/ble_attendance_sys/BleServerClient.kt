@@ -196,6 +196,16 @@ class BleServerClient(
                             }
                     }
 
+                    if (
+                        stopMessage == null &&
+                        !lecture.optString("beacon_address").equals(
+                            session.getString("beacon_id"),
+                            ignoreCase = true
+                        )
+                    ) {
+                        stopMessage = "수업에 지정된 비콘과 수집 대상이 다릅니다. 다시 참여하세요"
+                    }
+
                     if (stopMessage == null && !registered) {
                         request(
                             "POST",

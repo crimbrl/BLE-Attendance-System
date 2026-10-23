@@ -14,6 +14,8 @@ object CollectionUiState {
     var activeClassId by mutableStateOf("")
     var activeStudentId by mutableStateOf("")
     var isCollecting by mutableStateOf(false)
+    var classroomName by mutableStateOf("")
+    var beaconName by mutableStateOf("")
     var deviceAddress by mutableStateOf<String?>(null)
     var scanInterrupted by mutableStateOf(false)
     val rssiSamples = mutableStateListOf<RssiSample>()

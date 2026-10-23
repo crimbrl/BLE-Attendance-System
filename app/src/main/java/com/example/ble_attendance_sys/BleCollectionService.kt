@@ -30,6 +30,8 @@ class BleCollectionService : Service() {
         const val EXTRA_ADDRESS = "device_address"
         const val EXTRA_SERVER_URL = "server_url"
         const val EXTRA_CLASS_ID = "class_id"
+        const val EXTRA_CLASSROOM_NAME = "classroom_name"
+        const val EXTRA_BEACON_NAME = "beacon_name"
         const val EXTRA_STUDENT_ID = "student_id"
         const val EXTRA_STUDENT_NAME = "student_name"
         private const val CHANNEL_ID = "ble_collection"
@@ -131,13 +133,13 @@ class BleCollectionService : Service() {
                     return START_NOT_STICKY
                 }
 
-                startCollection(
-                    address,
-                    serverUrl,
-                    classId,
-                    studentId,
-                    studentName
-                )
+                CollectionUiState.classroomName =
+                    intent.getStringExtra(EXTRA_CLASSROOM_NAME).orEmpty()
+
+                CollectionUiState.beaconName =
+                    intent.getStringExtra(EXTRA_BEACON_NAME).orEmpty()
+
+                startCollection(address, serverUrl, classId, studentId, studentName)
             }
             else -> stopSelf()
         }
@@ -205,6 +207,9 @@ class BleCollectionService : Service() {
             return
         }
 
+        CollectionUiState.rssiSamples.clear()
+        CollectionUiState.closedWindows.clear()
+
         val startElapsedNs = SystemClock.elapsedRealtimeNanos()
         val startEpochMs = System.currentTimeMillis()
         aggregator = BleWindowAggregator(startElapsedNs)
@@ -259,7 +264,7 @@ class BleCollectionService : Service() {
     }
 
     private fun stopCollection() {
-        if (!collecting) return
+        if (!collecting && uploader == null) return
         handler.removeCallbacks(ticker)
         saveWindows(aggregator?.advanceTo(SystemClock.elapsedRealtimeNanos()).orEmpty())
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)

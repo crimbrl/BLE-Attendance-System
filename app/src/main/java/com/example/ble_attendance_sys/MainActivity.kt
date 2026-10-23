@@ -1,68 +1,52 @@
 package com.example.ble_attendance_sys
 
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
-import com.example.ble_attendance_sys.ui.theme.BLE_Attendance_SysTheme
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.activity.result.contract.ActivityResultContracts
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothManager
-import android.bluetooth.le.BluetoothLeScanner
-import android.content.Context
-import android.content.Intent
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
-import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.foundation.clickable
-import android.content.ContentValues
-import android.os.Environment
-import android.provider.MediaStore
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.example.ble_attendance_sys.ui.theme.BLE_Attendance_SysTheme
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URI
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import android.widget.Toast
-import java.net.URI
-
-data class BleDeviceUi(
-    val name: String,
-    val address: String,
-    val rssi: Int
-)
+import java.util.concurrent.Executors
 
 data class RssiSample(
     val timestamp: Long,
@@ -78,6 +62,8 @@ class MainActivity : ComponentActivity() {
     private var classCode by mutableStateOf("")
     private var studentId by mutableStateOf("")
     private var studentName by mutableStateOf("")
+    private val joinWorker = Executors.newSingleThreadExecutor()
+    private var joining by mutableStateOf(false)
     private var showSettings by mutableStateOf(true)
     private val closedWindows get() = CollectionUiState.closedWindows
 
@@ -101,16 +87,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BLE_Attendance_SysTheme {
-
-                val visibleDevices = scannedDevices.values
-                    .sortedByDescending { device -> device.rssi }
-                val selectedDevice = selectedDeviceAddress?.let { address ->
-                    scannedDevices[address]
-                }
-
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
                         .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -119,12 +99,12 @@ class MainActivity : ComponentActivity() {
 
                     Button(
                         onClick = { showSettings = true },
-                        enabled = !isCollecting
+                        enabled = !isCollecting && !joining
                     ) {
                         Text("학생 정보 · 수업 설정")
                     }
 
-                    if (showSettings && !isCollecting) {
+                    if (showSettings && !isCollecting && !joining) {
                         AlertDialog(
                             onDismissRequest = {
                                 showSettings = false
@@ -218,9 +198,11 @@ class MainActivity : ComponentActivity() {
                         text = if (isCollecting && CollectionUiState.scanInterrupted) {
                             "상태: BLE 스캔 중단"
                         } else if (isCollecting) {
-                            "상태: 수집 중 (백그라운드 가능)"
-                        } else if (isScanning) {
-                            "상태: 스캔 중"
+                            if (rssiSamples.isEmpty()) {
+                                "상태: 지정 비콘 신호 수신 대기"
+                            } else {
+                                "상태: 수집 중 (백그라운드 가능)"
+                            }
                         } else {
                             "상태: 스캔 중지"
                         }
@@ -228,42 +210,22 @@ class MainActivity : ComponentActivity() {
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Row {
-
-                        Button(
-                            onClick = {
-                                startBleScan()
-                            },
-                            enabled = !isCollecting
-                        ) {
-                            Text("스캔 시작")
-                        }
-
-                        Spacer(modifier = Modifier.padding(6.dp))
-
-                        Button(
-                            onClick = {
-                                stopBleScan()
-                            }
-                        ) {
-                            Text("스캔 중지")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(24.dp))
-
-                    if (selectedDevice != null || isCollecting || rssiSamples.isNotEmpty()) {
+                    run {
 
                         Text(
-                            text = "선택된 장치: ${selectedDevice?.name ?: "수집 중"}"
+                            text = "강의실: ${
+                                CollectionUiState.classroomName.ifBlank {
+                                    "수업 참여 시 자동 조회"
+                                }
+                            } · ${CollectionUiState.beaconName}"
                         )
 
-                        val shownRssi = if (isCollecting) rssiSamples.lastOrNull()?.rssi
-                        else selectedDevice?.rssi
+                        val shownRssi = rssiSamples.lastOrNull()?.rssi
+
                         Text("현재 RSSI: ${shownRssi?.let { "$it dBm" } ?: "수신 대기"}")
 
                         Text(
-                            text = selectedDevice?.address ?: CollectionUiState.deviceAddress.orEmpty()
+                            text = CollectionUiState.deviceAddress.orEmpty()
                         )
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -286,12 +248,16 @@ class MainActivity : ComponentActivity() {
 
                         Row {
                             Button(
-                                onClick = {
-                                    startRssiCollection()
-                                },
-                                enabled = !isCollecting
+                                onClick = { startRssiCollection() },
+                                enabled = !isCollecting && !joining
                             ) {
-                                Text("수업 참여 · 수집 시작")
+                                Text(
+                                    if (joining) {
+                                        "강의실 확인 중…"
+                                    } else {
+                                        "수업 참여 · 수집 시작"
+                                    }
+                                )
                             }
 
                             Spacer(modifier = Modifier.padding(6.dp))
@@ -312,46 +278,12 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 saveRssiSamplesToCsv()
                             },
-                            enabled = !isCollecting && rssiSamples.isNotEmpty()
+                            enabled = !isCollecting && !joining && rssiSamples.isNotEmpty()
                         ) {
                             Text("CSV 저장")
                         }
 
                         Spacer(modifier = Modifier.height(24.dp))
-                    }
-
-                    Text(
-                        text = "발견된 장치: ${visibleDevices.size}개"
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                    ) {
-
-                        items(
-                            items = visibleDevices,
-                            key = { device -> device.address }
-                        ) { device ->
-
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(enabled = !isCollecting) {
-                                        selectedDeviceAddress = device.address
-                                    }
-                                    .padding(vertical = 8.dp)
-                            ) {
-                                Text(text = device.name)
-                                Text(text = device.address)
-                                Text(text = "RSSI: ${device.rssi} dBm")
-                            }
-
-                            HorizontalDivider()
-                        }
                     }
                 }
             }
@@ -359,10 +291,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
-    private var bluetoothLeScanner: BluetoothLeScanner? = null
-    private var isScanning by mutableStateOf(false)
-    private val scannedDevices = mutableStateMapOf<String, BleDeviceUi>()
-    private var selectedDeviceAddress by mutableStateOf<String?>(null)
     private val isCollecting get() = CollectionUiState.isCollecting
     private val rssiSamples get() = CollectionUiState.rssiSamples
 
@@ -416,114 +344,12 @@ class MainActivity : ComponentActivity() {
             getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
 
         bluetoothAdapter = bluetoothManager.adapter
-        bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
-    }
-
-    private val scanCallback = object : ScanCallback() {
-
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            super.onScanResult(callbackType, result)
-
-            if (
-                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                return
-            }
-
-            val deviceName = result.device.name ?: "Unknown"
-            val deviceAddress = result.device.address
-            if (isCollecting) return
-            val rssi = result.rssi
-
-            scannedDevices[deviceAddress] = BleDeviceUi(
-                name = deviceName,
-                address = deviceAddress,
-                rssi = rssi
-            )
-
-            Log.d(
-                "BLE_SCAN",
-                "Device: $deviceName, Address: $deviceAddress, RSSI: $rssi"
-            )
-        }
-
-        override fun onScanFailed(errorCode: Int) {
-            super.onScanFailed(errorCode)
-
-            isScanning = false
-
-            Log.e(
-                "BLE_SCAN",
-                "Scan failed. Error code: $errorCode"
-            )
-        }
-    }
-
-    private fun startBleScan() {
-
-        if (isCollecting) return
-
-        if (
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
-            != PackageManager.PERMISSION_GRANTED ||
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestBluetoothPermissions.launch(
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                )
-            )
-            return
-        }
-
-        if (!bluetoothAdapter.isEnabled) {
-            Log.d("BLE_SCAN", "Bluetooth is turned off")
-            return
-        }
-
-        bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
-
-        if (bluetoothLeScanner == null) {
-            Log.e("BLE_SCAN", "BLE Scanner is not available")
-            return
-        }
-
-        if (!isScanning) {
-
-            scannedDevices.clear()
-            selectedDeviceAddress = null
-
-            bluetoothLeScanner?.startScan(scanCallback)
-            isScanning = true
-
-            Log.d("BLE_SCAN", "BLE scan started")
-        }
-    }
-    private fun stopBleScan() {
-
-        if (isCollecting) stopRssiCollection()
-
-        if (
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
-
-        if (isScanning) {
-            bluetoothLeScanner?.stopScan(scanCallback)
-            isScanning = false
-
-            Log.d("BLE_SCAN", "BLE scan stopped")
-        }
     }
 
     private fun startRssiCollection() {
+        if (joining || isCollecting) return
 
-        val address = selectedDeviceAddress ?: return
+        // 1. 학생 입력값 확인
         val parsed = runCatching {
             URI(serverBaseUrl.trim())
         }.getOrNull()
@@ -540,16 +366,13 @@ class MainActivity : ComponentActivity() {
                 "서버 주소, 학생 ID·이름, 8자리 수업 코드를 확인하세요",
                 Toast.LENGTH_LONG
             ).show()
-
             return
         }
 
         serverBaseUrl = serverBaseUrl.trim().trimEnd('/')
 
-        getSharedPreferences(
-            "student_settings",
-            MODE_PRIVATE
-        ).edit()
+        getSharedPreferences("student_settings", MODE_PRIVATE)
+            .edit()
             .putString("server", serverBaseUrl)
             .putString("class", classCode)
             .putString("student", studentId.trim())
@@ -558,6 +381,7 @@ class MainActivity : ComponentActivity() {
 
         showSettings = false
 
+        // 2. 블루투스 권한과 활성화 여부 확인
         if (
             checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
             != PackageManager.PERMISSION_GRANTED ||
@@ -568,27 +392,158 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        bluetoothLeScanner?.stopScan(scanCallback)
-        isScanning = false
+        if (!bluetoothAdapter.isEnabled) {
+            Toast.makeText(
+                this,
+                "블루투스를 켜고 다시 참여하세요",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
 
-        rssiSamples.clear()
-        closedWindows.clear()
-        val intent = Intent(this, BleCollectionService::class.java).apply {
-            action = BleCollectionService.ACTION_START
-            putExtra(BleCollectionService.EXTRA_ADDRESS, address)
-            putExtra(BleCollectionService.EXTRA_SERVER_URL, serverBaseUrl)
-            putExtra(BleCollectionService.EXTRA_CLASS_ID, classCode)
-            putExtra(BleCollectionService.EXTRA_STUDENT_ID, studentId.trim())
-            putExtra(BleCollectionService.EXTRA_STUDENT_NAME, studentName.trim())
+        // 이번 요청에 사용할 입력값을 고정
+        val endpoint = serverBaseUrl
+        val code = classCode
+        val id = studentId.trim()
+        val name = studentName.trim()
+
+        joining = true
+        CollectionUiState.uploadMessage = "수업과 강의실 비콘 확인 중"
+
+        // 3. 별도 스레드에서 수업 정보 조회
+        joinWorker.execute {
+            val result = runCatching {
+                val connection =
+                    URL("$endpoint/v1/classes/$code/status")
+                        .openConnection() as HttpURLConnection
+
+                try {
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+
+                    val status = connection.responseCode
+
+                    val body = (
+                            if (status in 200..299) {
+                                connection.inputStream
+                            } else {
+                                connection.errorStream
+                            }
+                            )?.bufferedReader()?.use {
+                            it.readText()
+                        }.orEmpty()
+
+                    val lecture = JSONObject(body)
+
+                    check(status in 200..299) {
+                        lecture.optString(
+                            "detail",
+                            "수업 조회 실패 ($status)"
+                        )
+                    }
+
+                    check(lecture.getString("status") == "ACTIVE") {
+                        "교수자가 수업을 시작한 뒤 참여하세요 (종료된 수업은 새 코드 필요)"
+                    }
+
+                    val address =
+                        lecture.optString("beacon_address").uppercase()
+
+                    check(BluetoothAdapter.checkBluetoothAddress(address)) {
+                        "강의실 비콘이 지정되지 않았습니다. 새 수업을 생성하세요"
+                    }
+
+                    lecture
+                } finally {
+                    connection.disconnect()
+                }
+            }
+
+            // 4. UI 스레드로 돌아와 서비스 실행
+            runOnUiThread {
+                joining = false
+
+                if (!isFinishing && !isDestroyed) {
+                    result.onSuccess { lecture ->
+                        if (
+                            !lifecycle.currentState.isAtLeast(
+                                androidx.lifecycle.Lifecycle.State.RESUMED
+                            )
+                        ) {
+                            CollectionUiState.uploadMessage =
+                                "앱으로 돌아와 수업 참여를 다시 눌러주세요"
+                        } else {
+                            runCatching {
+                                val address =
+                                    lecture.getString("beacon_address")
+                                        .uppercase()
+
+                                val intent = Intent(
+                                    this,
+                                    BleCollectionService::class.java
+                                ).apply {
+                                    action = BleCollectionService.ACTION_START
+
+                                    putExtra(
+                                        BleCollectionService.EXTRA_ADDRESS,
+                                        address
+                                    )
+                                    putExtra(
+                                        BleCollectionService.EXTRA_SERVER_URL,
+                                        endpoint
+                                    )
+                                    putExtra(
+                                        BleCollectionService.EXTRA_CLASS_ID,
+                                        code
+                                    )
+                                    putExtra(
+                                        BleCollectionService.EXTRA_STUDENT_ID,
+                                        id
+                                    )
+                                    putExtra(
+                                        BleCollectionService.EXTRA_STUDENT_NAME,
+                                        name
+                                    )
+                                    putExtra(
+                                        BleCollectionService.EXTRA_CLASSROOM_NAME,
+                                        lecture.getString("classroom_name")
+                                    )
+                                    putExtra(
+                                        BleCollectionService.EXTRA_BEACON_NAME,
+                                        lecture.getString("beacon_name")
+                                    )
+                                }
+
+                                startForegroundService(intent)
+
+                                if (
+                                    Build.VERSION.SDK_INT >= 33 &&
+                                    checkSelfPermission(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    requestNotificationPermission.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                }
+                            }.onFailure {
+                                CollectionUiState.uploadMessage =
+                                    "수집 시작 실패: ${it.message}"
+                            }
+                        }
+                    }.onFailure {
+                        CollectionUiState.uploadMessage =
+                            "수업 참여 실패: ${it.message}"
+
+                        Toast.makeText(
+                            this,
+                            CollectionUiState.uploadMessage,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
         }
-        startForegroundService(intent)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        Log.d("RSSI_DATA", "BLE collection service requested")
     }
     private fun stopRssiCollection() {
         startService(Intent(this, BleCollectionService::class.java).apply {
@@ -597,9 +552,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
-            bluetoothLeScanner?.stopScan(scanCallback)
-        }
+        joinWorker.shutdownNow()
         super.onDestroy()
     }
 
@@ -664,8 +617,9 @@ class MainActivity : ComponentActivity() {
                         sample.timestamp - previousTimestamp!!
                     }
 
-                val address = selectedDeviceAddress ?: ""
-                val name = scannedDevices[address]?.name ?: "Unknown"
+                val address = CollectionUiState.deviceAddress.orEmpty()
+                val name =
+                    "\"" + CollectionUiState.beaconName.replace("\"", "\"\"") + "\""
 
                 writer.write(
                     "${sample.timestamp}," +
