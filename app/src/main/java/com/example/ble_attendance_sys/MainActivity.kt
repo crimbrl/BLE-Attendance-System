@@ -86,208 +86,107 @@ class MainActivity : ComponentActivity() {
         initializeBluetooth()
 
         setContent {
-            BLE_Attendance_SysTheme {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-
-                    Text(text = "SKKU 전자출결")
-
-                    Button(
-                        onClick = { showSettings = true },
-                        enabled = !isCollecting && !joining
-                    ) {
-                        Text("학생 정보 · 수업 설정")
-                    }
-
-                    if (showSettings && !isCollecting && !joining) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showSettings = false
-                            },
-                            title = {
-                                Text("수업 참여 설정")
-                            },
-                            text = {
-                                Column(
-                                    modifier = Modifier.verticalScroll(
-                                        rememberScrollState()
-                                    )
-                                ) {
-                                    OutlinedTextField(
-                                        value = serverBaseUrl,
-                                        onValueChange = {
-                                            serverBaseUrl = it
-                                        },
-                                        label = {
-                                            Text("서버 주소")
-                                        },
-                                        singleLine = true
-                                    )
-
-                                    OutlinedTextField(
-                                        value = studentId,
-                                        onValueChange = {
-                                            studentId = it.take(100)
-                                        },
-                                        label = {
-                                            Text("학생 ID")
-                                        },
-                                        singleLine = true
-                                    )
-
-                                    OutlinedTextField(
-                                        value = studentName,
-                                        onValueChange = {
-                                            studentName = it.take(100)
-                                        },
-                                        label = {
-                                            Text("이름")
-                                        },
-                                        singleLine = true
-                                    )
-
-                                    OutlinedTextField(
-                                        value = classCode,
-                                        onValueChange = {
-                                            classCode = it.uppercase().take(8)
-                                        },
-                                        label = {
-                                            Text("8자리 수업 코드")
-                                        },
-                                        singleLine = true
-                                    )
-
-                                    Text("교수자 화면에서 수업을 시작한 뒤 참여하세요.")
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(
-                                    onClick = {
-                                        showSettings = false
-                                    }
-                                ) {
-                                    Text("입력 완료")
-                                }
-                            }
-                        )
-                    }
-
-                    Text(
-                        if (isCollecting) {
-                            "학생 ${CollectionUiState.activeStudentId} · 수업 ${CollectionUiState.activeClassId}"
-                        } else {
-                            "학생 $studentId · 수업 $classCode"
-                        }
-                    )
-
-                    Text(CollectionUiState.uploadMessage)
-
-                    Text(
-                        "전송 대기 ${CollectionUiState.pendingWindows}개 · " +
-                                "거절 보관 ${CollectionUiState.rejectedWindows}개"
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = if (isCollecting && CollectionUiState.scanInterrupted) {
-                            "상태: BLE 스캔 중단"
-                        } else if (isCollecting) {
-                            if (rssiSamples.isEmpty()) {
-                                "상태: 지정 비콘 신호 수신 대기"
-                            } else {
-                                "상태: 수집 중 (백그라운드 가능)"
-                            }
-                        } else {
-                            "상태: 스캔 중지"
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    run {
-
-                        Text(
-                            text = "강의실: ${
-                                CollectionUiState.classroomName.ifBlank {
-                                    "수업 참여 시 자동 조회"
-                                }
-                            } · ${CollectionUiState.beaconName}"
-                        )
-
-                        val shownRssi = rssiSamples.lastOrNull()?.rssi
-
-                        Text("현재 RSSI: ${shownRssi?.let { "$it dBm" } ?: "수신 대기"}")
-
-                        Text(
-                            text = CollectionUiState.deviceAddress.orEmpty()
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text(
-                            text = if (isCollecting) {
-                                "데이터 수집 중 (${rssiSamples.size}개)"
-                            } else {
-                                "데이터 수집 중지 (${rssiSamples.size}개)"
-                            }
-                        )
-
-                        Text("완료된 5초 Window: ${closedWindows.size}개")
-                        closedWindows.lastOrNull()?.let { last ->
-                            Text("최근 Window ${last.windowIndex}: ${last.scanState}, " +
-                                    "패킷 ${last.sampleCount}개, 평균 RSSI ${last.meanRssiDbm ?: "없음"}")
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row {
-                            Button(
-                                onClick = { startRssiCollection() },
-                                enabled = !isCollecting && !joining
-                            ) {
-                                Text(
-                                    if (joining) {
-                                        "강의실 확인 중…"
-                                    } else {
-                                        "수업 참여 · 수집 시작"
-                                    }
+            AttendanceGreenTheme {
+                AttendanceScreen(
+                    studentName = studentName,
+                    studentId = if (isCollecting) CollectionUiState.activeStudentId else studentId,
+                    classCode = if (isCollecting) CollectionUiState.activeClassId else classCode,
+                    joining = joining,
+                    isCollecting = isCollecting,
+                    scanInterrupted = CollectionUiState.scanInterrupted,
+                    classroomName = CollectionUiState.classroomName,
+                    beaconName = CollectionUiState.beaconName,
+                    deviceAddress = CollectionUiState.deviceAddress,
+                    uploadMessage = CollectionUiState.uploadMessage,
+                    pendingWindows = CollectionUiState.pendingWindows,
+                    rejectedWindows = CollectionUiState.rejectedWindows,
+                    sampleCount = rssiSamples.size,
+                    windowCount = closedWindows.size,
+                    lastRssi = rssiSamples.lastOrNull()?.rssi,
+                    lastWindowSummary = closedWindows.lastOrNull()?.let { last ->
+                        "최근 Window ${last.windowIndex}: ${last.scanState}, " +
+                                "패킷 ${last.sampleCount}개, 평균 RSSI ${last.meanRssiDbm ?: "없음"}"
+                    },
+                    onSettings = { showSettings = true },
+                    onStart = { startRssiCollection() },
+                    onStop = { stopRssiCollection() },
+                    onExport = { saveRssiSamplesToCsv() }
+                )
+                if (showSettings && !isCollecting && !joining) {
+                    AlertDialog(
+                        onDismissRequest = {
+                            showSettings = false
+                        },
+                        title = {
+                            Text("수업 참여 설정")
+                        },
+                        text = {
+                            Column(
+                                modifier = Modifier.verticalScroll(
+                                    rememberScrollState()
                                 )
-                            }
-
-                            Spacer(modifier = Modifier.padding(6.dp))
-
-                            Button(
-                                onClick = {
-                                    stopRssiCollection()
-                                },
-                                enabled = isCollecting
                             ) {
-                                Text("수집 중지")
+                                OutlinedTextField(
+                                    value = serverBaseUrl,
+                                    onValueChange = {
+                                        serverBaseUrl = it
+                                    },
+                                    label = {
+                                        Text("서버 주소")
+                                    },
+                                    singleLine = true
+                                )
+
+                                OutlinedTextField(
+                                    value = studentId,
+                                    onValueChange = {
+                                        studentId = it.take(100)
+                                    },
+                                    label = {
+                                        Text("학생 ID")
+                                    },
+                                    singleLine = true
+                                )
+
+                                OutlinedTextField(
+                                    value = studentName,
+                                    onValueChange = {
+                                        studentName = it.take(100)
+                                    },
+                                    label = {
+                                        Text("이름")
+                                    },
+                                    singleLine = true
+                                )
+
+                                OutlinedTextField(
+                                    value = classCode,
+                                    onValueChange = {
+                                        classCode = it.uppercase().take(8)
+                                    },
+                                    label = {
+                                        Text("8자리 수업 코드")
+                                    },
+                                    singleLine = true
+                                )
+
+                                Text("교수자 화면에서 수업을 시작한 뒤 참여하세요.")
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    showSettings = false
+                                }
+                            ) {
+                                Text("입력 완료")
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Button(
-                            onClick = {
-                                saveRssiSamplesToCsv()
-                            },
-                            enabled = !isCollecting && !joining && rssiSamples.isNotEmpty()
-                        ) {
-                            Text("CSV 저장")
-                        }
-
-                        Spacer(modifier = Modifier.height(24.dp))
-                    }
+                    )
                 }
             }
         }
+
     }
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
